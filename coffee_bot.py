@@ -180,7 +180,7 @@ async def rating_selected(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         rating_text = f"{rating} ⭐"
         location_name = context.user_data.get('location_name', 'Невідома локація')
         
-        text = f"""
+        text = """
 📝 Якщо бажаєте, напишіть більш детальний відгук про каву або обслуговування.
 
 Або натисніть /skip щоб пропустити детальний коментар.
