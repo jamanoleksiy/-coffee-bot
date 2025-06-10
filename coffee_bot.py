@@ -97,7 +97,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     welcome_text = """
-👋 Привіт! Обери, будь ласка, свою локацію:
+👋 Привіт! Оберіть, будь ласка, свою локацію:
 """
     
     await update.message.reply_text(welcome_text, reply_markup=reply_markup)
