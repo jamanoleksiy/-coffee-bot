@@ -42,9 +42,7 @@ def home():
 def health():
     return 'OK'
 
-@app.route('/ping')
-def ping():
-    return 'pong'
+
 
 def run_web_server():
     """Запуск веб-сервера в окремому потоці"""
