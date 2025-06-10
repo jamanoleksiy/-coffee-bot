@@ -29,6 +29,11 @@ LOCATIONS = {
 # Додаємо Flask веб-сервер для Render
 app = Flask(__name__)
 
+@app.route('/ping', methods=['GET'])
+def ping():
+    return 'OK', 200
+
+
 @app.route('/')
 def home():
     return 'Coffee Bot is running!'
