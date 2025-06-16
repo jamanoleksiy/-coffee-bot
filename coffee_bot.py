@@ -101,7 +101,7 @@ async def location_selected(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     location_id = query.data.split('_')[1]
     context.user_data['location'] = location_id
     context.user_data['location_name'] = LOCATIONS[location_id]
-    await query.edit_message_text("📝 Якщо бажаєте, напишіть більш детальний відгук про каву або обслуговування:")
+    await query.edit_message_text("📝 Якщо бажаєте, напишіть більш детальний відгук про каву та обслуговування:")
 
 async def save_review_and_thank(update: Update, context: ContextTypes.DEFAULT_TYPE, comment: str) -> None:
     user = update.effective_user
