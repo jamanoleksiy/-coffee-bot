@@ -2,7 +2,8 @@ import logging
 import sqlite3
 import os
 import threading
-from datetime import datetime
+from datetime import datetime, timezone
+import pytz
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 from flask import Flask
@@ -13,11 +14,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Отримуємо токен з змінних середовища (для безпеки на Render)
-BOT_TOKEN = os.getenv("BOT_TOKEN", "7488970157:AAE24_QrAyc5rWyaMqiiOGpCZKPkXs68N0I")
-
-# ID групи куди надсилати відгуки (отримайте через @userinfobot)
-ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID", "-1002512354620")
+# Отримуємо токен з змінних середовища
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
 
 # Локації кав'ярень
 LOCATIONS = {
@@ -26,50 +25,36 @@ LOCATIONS = {
     "location3": "📍 вул. Лариси Руденко, 15/14"
 }
 
-# Додаємо Flask веб-сервер для Render
+# Flask веб-сервер
 app = Flask(__name__)
-
-@app.route('/ping', methods=['GET'])
-def ping():
-    return 'OK', 200
 
 @app.route('/')
 def home():
     return 'Coffee Bot is running!'
+
+@app.route('/ping')
+def ping():
+    return 'OK', 200
 
 @app.route('/health')
 def health():
     return 'OK'
 
 def run_web_server():
-    """Запуск веб-сервера в окремому потоці"""
     try:
         port = int(os.environ.get('PORT', 10000))
         app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
     except Exception as e:
         logger.error(f"Помилка запуску веб-сервера: {e}")
 
-def keep_alive():
-    """Функція для підтримки активності бота"""
-    import time
-    while True:
-        try:
-            time.sleep(300)
-            logger.info("Bot is alive and working")
-        except Exception as e:
-            logger.error(f"Помилка в keep_alive: {e}")
-
 class CoffeeReviewBot:
     def __init__(self):
         self.init_database()
     
     def init_database(self):
-        """Ініціалізація бази даних для зберігання відгуків"""
         try:
-            db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'coffee_reviews.db')
-            conn = sqlite3.connect(db_path)
+            conn = sqlite3.connect('coffee_reviews.db')
             cursor = conn.cursor()
-            
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS reviews (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -80,205 +65,115 @@ class CoffeeReviewBot:
                     timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
-            
             conn.commit()
             conn.close()
-            logger.info("База даних ініціалізована успішно")
         except Exception as e:
-            logger.error(f"Помилка ініціалізації бази даних: {e}")
+            logger.error(f"Помилка ініціалізації БД: {e}")
     
     def save_review(self, user_id, username, location, comment):
-        """Збереження відгуку в базу даних"""
         try:
-            db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'coffee_reviews.db')
-            conn = sqlite3.connect(db_path)
+            conn = sqlite3.connect('coffee_reviews.db')
             cursor = conn.cursor()
-            
             cursor.execute('''
                 INSERT INTO reviews (user_id, username, location, comment)
                 VALUES (?, ?, ?, ?)
             ''', (user_id, username, location, comment))
-            
             conn.commit()
             conn.close()
-            logger.info(f"Відгук збережено: {username}")
         except Exception as e:
             logger.error(f"Помилка збереження відгуку: {e}")
 
-# Ініціалізація бота
 bot = CoffeeReviewBot()
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Початкове повідомлення з вибором локації"""
-    try:
-        keyboard = []
-        
-        for loc_id, loc_name in LOCATIONS.items():
-            keyboard.append([InlineKeyboardButton(loc_name, callback_data=f"location_{loc_id}")])
-        
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        welcome_text = """
-👋 Привіт! Оберіть, будь ласка, свою локацію:
-"""
-        
-        await update.message.reply_text(welcome_text, reply_markup=reply_markup)
-    except Exception as e:
-        logger.error(f"Помилка в команді start: {e}")
+    keyboard = [
+        [InlineKeyboardButton(loc_name, callback_data=f"location_{loc_id}")]
+        for loc_id, loc_name in LOCATIONS.items()
+    ]
+    await update.message.reply_text(
+        "👋 Привіт! Оберіть свою локацію:",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
 
 async def location_selected(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обробка вибору локації"""
-    try:
-        query = update.callback_query
-        await query.answer()
-        
-        location_id = query.data.split('_')[1]
-        location_name = LOCATIONS[location_id]
-        
-        # Зберігаємо вибрану локацію в контексті користувача
-        context.user_data['location'] = location_id
-        context.user_data['location_name'] = location_name
-        
-        text = """
-📝 Якщо бажаєте, напишіть більш детальний відгук про каву або обслуговування.
-"""
-        
-        await query.edit_message_text(text)
-    except Exception as e:
-        logger.error(f"Помилка в вибері локації: {e}")
-
-async def skip_comment(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Пропуск детального коментаря"""
-    try:
-        await save_review_and_thank(update, context, "")
-    except Exception as e:
-        logger.error(f"Помилка в skip_comment: {e}")
-
-async def receive_comment(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Отримання детального коментаря"""
-    try:
-        comment = update.message.text
-        await save_review_and_thank(update, context, comment)
-    except Exception as e:
-        logger.error(f"Помилка в receive_comment: {e}")
+    query = update.callback_query
+    await query.answer()
+    location_id = query.data.split('_')[1]
+    context.user_data['location'] = location_id
+    context.user_data['location_name'] = LOCATIONS[location_id]
+    await query.edit_message_text("📝 Напишіть ваш відгук (або /skip щоб пропустити):")
 
 async def save_review_and_thank(update: Update, context: ContextTypes.DEFAULT_TYPE, comment: str) -> None:
-    """Збереження відгуку та відправка подяки"""
-    try:
-        user = update.effective_user
-        location = context.user_data.get('location', 'unknown')
-        location_name = context.user_data.get('location_name', 'Невідома локація')
-        
-        # Зберігаємо відгук в базу даних
-        bot.save_review(
-            user_id=user.id,
-            username=user.username or user.first_name,
-            location=location,
-            comment=comment
-        )
-        
-        # Відправляємо повідомлення подяки
-        thank_you_text = f"""
-Дякуємо за ваш відгук! ❤️
+    user = update.effective_user
+    location_name = context.user_data.get('location_name', 'Невідома локація')
+    
+    bot.save_review(
+        user_id=user.id,
+        username=user.username or user.first_name,
+        location=context.user_data.get('location'),
+        comment=comment
+    )
+    
+    kiev_time = datetime.now(pytz.timezone('Europe/Kiev')).strftime("%d.%m.%Y %H:%M")
+    
+    await update.message.reply_text(
+        f"❤️ Дякуємо за відгук!\n\n"
+        f"📍 Локація: {location_name}\n"
+        f"💬 Коментар: {comment or 'Без коментаря'}\n\n"
+        f"Новий відгук: /start"
+    )
+    
+    await context.bot.send_message(
+        chat_id=ADMIN_CHAT_ID,
+        text=f"📝 НОВИЙ ВІДГУК\n\n"
+             f"👤 Користувач: {user.username or user.first_name}\n"
+             f"📍 Локація: {location_name}\n"
+             f"💬 Коментар: {comment or 'Без коментаря'}\n"
+             f"🕐 Час: {kiev_time}"
+    )
+    
+    context.user_data.clear()
 
-📍 Локація: {location_name}
-💬 Коментар: {comment if comment else "Без коментаря"}
+async def skip_comment(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await save_review_and_thank(update, context, "")
 
-Для нового відгуку натисніть /start
-"""
-        
-        await update.message.reply_text(thank_you_text)
-        
-        # Відправляємо відгук в адмін-групу
-        admin_message = f"""
-📝 НОВИЙ ВІДГУК
-
-👤 Користувач: {user.username or user.first_name}
-📍 Локація: {location_name}  
-💬 Коментар: {comment if comment else "Без коментаря"}
-🕐 Час: {datetime.now().strftime("%d.%m.%Y %H:%M")}
-"""
-        
-        try:
-            await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=admin_message)
-        except Exception as e:
-            logger.error(f"Помилка відправки в адмін-групу: {e}")
-        
-        # Очищаємо дані користувача
-        context.user_data.clear()
-    except Exception as e:
-        logger.error(f"Помилка в save_review_and_thank: {e}")
+async def receive_comment(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await save_review_and_thank(update, context, update.message.text)
 
 async def admin_reviews(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Команда для перегляду останніх відгуків (тільки для адмінів)"""
-    try:
-        db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'coffee_reviews.db')
-        conn = sqlite3.connect(db_path)
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            SELECT username, location, comment, timestamp 
-            FROM reviews 
-            ORDER BY timestamp DESC 
-            LIMIT 10
-        ''')
-        
-        reviews = cursor.fetchall()
-        conn.close()
-        
-        if not reviews:
-            await update.message.reply_text("Поки що немає відгуків.")
-            return
-        
-        text = "📊 Останні 10 відгуків:\n\n"
-        
-        for review in reviews:
-            username, location, comment, timestamp = review
-            location_name = LOCATIONS.get(location, location)
-            
-            text += f"👤 {username}\n"
-            text += f"📍 {location_name}\n"
-            text += f"💬 {comment if comment else 'Без коментаря'}\n"
-            text += f"🕐 {timestamp}\n"
-            text += "─" * 30 + "\n\n"
-        
-        await update.message.reply_text(text)
-    except Exception as e:
-        logger.error(f"Помилка в admin_reviews: {e}")
+    conn = sqlite3.connect('coffee_reviews.db')
+    cursor = conn.cursor()
+    cursor.execute('SELECT username, location, comment, timestamp FROM reviews ORDER BY timestamp DESC LIMIT 10')
+    
+    text = "📊 Останні 10 відгуків:\n\n"
+    for username, location, comment, timestamp in cursor.fetchall():
+        dt = datetime.strptime(timestamp, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+        local_time = dt.astimezone(pytz.timezone('Europe/Kiev')).strftime("%d.%m.%Y %H:%M")
+        text += (
+            f"👤 {username}\n"
+            f"📍 {LOCATIONS.get(location, location)}\n"
+            f"💬 {comment or 'Без коментаря'}\n"
+            f"🕐 {local_time}\n"
+            "─" * 30 + "\n\n"
+        )
+    
+    await update.message.reply_text(text)
+    conn.close()
 
 def main() -> None:
-    """Запуск бота"""
-    try:
-        # Запускаємо веб-сервер в окремому потоці
-        web_thread = threading.Thread(target=run_web_server)
-        web_thread.daemon = True
-        web_thread.start()
-        
-        # Запускаємо функцію підтримки активності
-        alive_thread = threading.Thread(target=keep_alive)
-        alive_thread.daemon = True
-        alive_thread.start()
-        
-        # Створюємо додаток
-        application = Application.builder().token(BOT_TOKEN).build()
-        
-        # Додаємо обробники команд
-        application.add_handler(CommandHandler("start", start))
-        application.add_handler(CommandHandler("skip", skip_comment))
-        application.add_handler(CommandHandler("reviews", admin_reviews))
-        
-        # Додаємо обробники callback-запитів
-        application.add_handler(CallbackQueryHandler(location_selected, pattern="^location_"))
-        
-        # Додаємо обробник текстових повідомлень
-        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, receive_comment))
-        
-        # Запускаємо бота
-        logger.info("Бот та веб-сервер запущені! Натисніть Ctrl+C для зупинки.")
-        application.run_polling(allowed_updates=Update.ALL_TYPES)
-        
-    except Exception as e:
-        logger.error(f"Критична помилка запуску: {e}")
+    web_thread = threading.Thread(target=run_web_server, daemon=True)
+    web_thread.start()
+    
+    application = Application.builder().token(BOT_TOKEN).build()
+    
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("skip", skip_comment))
+    application.add_handler(CommandHandler("reviews", admin_reviews))
+    application.add_handler(CallbackQueryHandler(location_selected, pattern="^location_"))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, receive_comment))
+    
+    logger.info("Бот запущений")
+    application.run_polling()
 
 if __name__ == '__main__':
     main()
